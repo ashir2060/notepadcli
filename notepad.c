@@ -70,6 +70,7 @@ static void writeStr(const char *s) {
 
 
 
+
 int main(void) {
     enableRawInput();
     atexit(disableRawInput);
