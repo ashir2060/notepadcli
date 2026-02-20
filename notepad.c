@@ -1,66 +1,118 @@
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <process.h>
+#include <string.h>
 
-void compile_n_run(){
-	system("gcc -o data data.c && data");
+static HANDLE hin, hout;
+static DWORD inModeOrig;
+
+static void terminate_on_error(const char *msg) {
+    DWORD err = GetLastError(); //"GetLastError()" is an OS thread
+    fprintf(stderr, "%s (err=%lu)\n", msg, (unsigned long)err);
+    ExitProcess(1);
 }
 
-int main(int,char *argv[]) {
 
-	//Read block
-	char ch[100][50];
-	int count=0;
-	FILE *fp = fopen(argv[1],"r");
-	while( fscanf(fp, "%49s",ch[count]) ==1){
-		count++;
-	}
-	fclose(fp);
 
-	//Show block
-	int count2=0;
-	while(count2<count){
-		printf("%s ",ch[count2]);
-		count2++; 
-	}
-	
-	printf("\n->");
+static void enableRawInput(void) {
+    hin  = GetStdHandle(STD_INPUT_HANDLE); //hin -> handle to i/o
+    hout = GetStdHandle(STD_OUTPUT_HANDLE); //hout -> handle to output screen
+    if (hin == INVALID_HANDLE_VALUE || hout == INVALID_HANDLE_VALUE) terminate_on_error("GetStdHandle"); //technically invalid_handle_value represents -1 die throws err
 
-	//compile
-	int _compile_;
-	const char *_args_for_compile_[] = {
-		"gcc",
-		"-o",
-		"data",
-		argv[1], //data.c
-		NULL
-		};
-	_compile_ = _spawnvp(_P_WAIT,"gcc",_args_for_compile_); //parent wait
-	if(_compile_!=0){
-		printf("compile failed!");
-		return 1;
-	}
-	
-	//run
-	int _run_;
-	const char *_args_for_run_[]={
-		"data",
-		NULL
-		};
-	_run_ = _spawnvp(_P_WAIT,"data",_args_for_run_);
-	if(_run_!=0){
-		printf("Running failed");
-		return 1;
-	}
+    if (!GetConsoleMode(hin, &inModeOrig)) terminate_on_error("GetConsoleMode"); //inModeOrig stores current console mode into inModeOrig
 
-	printf("\n");
-	
-	printf(">>");
-	
-	char cursor_and_input[50];
-	fgets(cursor_and_input,sizeof(cursor_and_input),stdin);
-	
-	printf("%s",cursor_and_input);
+    DWORD mode = inModeOrig;
 
-	return 0;
+    // get keypresses immediately
+    mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT);
+
+    // stop CMD from freezing on mouse select (Quick Edit)
+    mode &= ~(ENABLE_QUICK_EDIT_MODE | ENABLE_MOUSE_INPUT);
+    mode |= ENABLE_EXTENDED_FLAGS;
+
+    if (!SetConsoleMode(hin, mode)) terminate_on_error("SetConsoleMode");
+}
+
+
+
+static void disableRawInput(void) {
+    SetConsoleMode(hin, inModeOrig);
+}
+
+
+
+static int readKey(void) {
+    INPUT_RECORD rec;
+    DWORD nread;
+
+    while (1) {
+        if (!ReadConsoleInputA(hin, &rec, 1, &nread)) terminate_on_error("ReadConsoleInput");
+        if (rec.EventType != KEY_EVENT) continue;
+
+        KEY_EVENT_RECORD ke = rec.Event.KeyEvent;
+        if (!ke.bKeyDown) continue;
+
+        if (ke.wVirtualKeyCode == VK_BACK) return 8;      // backspace
+        if (ke.wVirtualKeyCode == VK_RETURN) return 13;   // enter
+
+        // printable ASCII
+        if (ke.uChar.AsciiChar >= 32 && ke.uChar.AsciiChar <= 126)
+            return (unsigned char)ke.uChar.AsciiChar;
+    }
+}
+
+
+
+static void writeStr(const char *s) {
+    DWORD written;
+    if (!WriteConsoleA(hout, s, (DWORD)strlen(s), &written, NULL)) terminate_on_error("WriteConsoleA");
+}
+
+
+
+int main(void) {
+    enableRawInput();
+    atexit(disableRawInput);
+
+    const char *prompt = ">>";
+    char buf[256] = "edit this";     // prefilled text
+    int len = (int)strlen(buf);
+
+    // show prompt + initial text
+    writeStr(prompt);
+    writeStr(buf);
+
+    while (1) {
+        int k = readKey();
+
+        if (k == 13) { // Enter
+            writeStr("\r\n");
+            break;
+        }
+
+        if (k == 8) { // Backspace
+            if (len > 0) {
+                // remove one char from buffer end
+                len--;
+                buf[len] = '\0';
+
+                // erase from screen: move left, print space, move left
+                writeStr("\b \b");
+            }
+            continue;
+        }
+
+        // add char at end (simple)
+        if (len < (int)sizeof(buf) - 1) {
+            buf[len++] = (char)k;
+            buf[len] = '\0';
+
+            char c = (char)k;
+            DWORD written;
+            WriteConsoleA(hout, &c, 1, &written, NULL);
+        }
+    }
+
+    printf("Final text: %s\n", buf);
+    return 0;
 }
